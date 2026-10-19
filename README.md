@@ -141,3 +141,20 @@ php tests/run.php     # 变量优先级、file 参数安全校验、prepare 插�
 - **变量面板**：变量键值列表，长值折叠、可复制（值不会明文常驻展示）；
 - **实时刷新**：每 5 秒轮询 `version`，变化时静默刷新树并保持选中项与滚动位置；
 - **主题**：浅色/深色切换（localStorage 记忆）。
+
+- `.http`实例
+
+```http
+@url=https://testagent1.test.com/prod
+### 服务商登录
+# 分组: 服务商
+POST {{url}}/supplier/login
+Content-Type: application/json
+
+{
+    "email": "j.c.leng@foxmail.com",
+    "password": "666666",
+    "code": "666666"
+}
+
+```
