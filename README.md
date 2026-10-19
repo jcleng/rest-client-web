@@ -32,10 +32,13 @@ PHP_CLI_SERVER_WORKERS=20 php -S 127.0.0.1:8099
 
 ```json
 {
-  "dir": ".",
+  "dir": "http",
   "exclude": [".git", "node_modules", ".superpowers", "assets", "lib", "config", "tests", "docs", "tools", "reports"]
 }
 ```
+
+> 当前 `dir` 指向项目根下的 `http/` 目录（Docker 部署时该目录就是挂载点：`-v "$(pwd)/http:/app/http"`）。
+> 注意 `realpath` 必须落在项目根内，容器里不能直接写 `/http`，挂载点必须在 `/app` 下。
 
 - `dir`：扫描根目录，相对路径基于项目根解析，也可写绝对路径，但 `realpath` 后**必须位于项目根之内**（防目录穿越）；
 - `exclude`：排除的**目录名**（不区分大小写，递归生效；`.` 开头的隐藏目录始终跳过）；
@@ -60,7 +63,7 @@ PHP_CLI_SERVER_WORKERS=20 php -S 127.0.0.1:8099
 注意点：
 
 1. `exclude` 只匹配目录名，不支持文件名/glob 排除；`dir` 指向的目录本身不受 `exclude` 影响，排除只作用于其子目录；
-2. 项目根下直接放置的 `.http` 文件始终会被扫到（如 `http.http`）；
+2. 项目根下直接放置的 `.http` 文件只有在 `dir` 为 `.` 时才会被扫到；当前 `dir` 为 `http`，只扫 `http/` 目录内的 `.http` 文件；
 3. 解析结果按「文件 mtime + size」签名缓存，进程内静态缓存 + 系统临时目录 JSON 缓存（文件名含 `md5(dir)`，不同 `dir` 互不干扰）；
 4. 单个文件解析失败不阻断整体，该文件节点带 `error` 字段且 `groups` 为空数组。
 

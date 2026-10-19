@@ -1,0 +1,8 @@
+.git
+.gitignore
+.dockerignore
+Dockerfile
+.vscode
+.superpowers
+node_modules
+*.md
