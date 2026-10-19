@@ -1,0 +1,13 @@
+.vscode/
+**.json
+**.http
+**.md
+docs/**/**.md
+!tools/**/**.md
+node_modules/
+**.pyc
+
+!httpviewer.config.json
+**.txt
+.superpowers/
+!**/**README**.md

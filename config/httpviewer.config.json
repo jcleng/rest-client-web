@@ -1,0 +1,1 @@
+{"dir": ".", "exclude": [".git", "node_modules", ".superpowers", "assets", "lib", "config", "tests", "docs", "tools", "reports"]}
