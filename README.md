@@ -88,24 +88,56 @@ PHP_CLI_SERVER_WORKERS=20 php -S 127.0.0.1:8099
     }
 ```
 
+### 变量解析链路
+
+变量解析**全部在 PHP 侧完成**，前端只负责渲染与传参：
+
+```
+PHP 读 .http（api=tree，含文件级 @var）+ settings.json（api=vars，环境变量）
+      ↓  渲染到界面（变量面板、URL 真实值预览）
+用户在顶部切换「环境」 → 前端 fetchVars(env) 重取变量表 → 重渲染
+      ↓  发送时前端只上送 { url/headers/body 模板, file, env }
+PHP api=send 自行读 file 指向的 .http 取文件级变量，插值后代理发送
+```
+
+优先级（由低到高）：**文件级 `@var` < 环境变量（`$shared` + env 覆盖）**。
+
+即：`.http` 里的 `@host=...` 只是**默认值**，用户在顶部选中某个环境后，环境里的同名键会覆盖它。
+文件里定义了、环境里没有的键（如 `@token2`、`@admintoken`）仍然生效。
+
+- 前端不做变量替换，上送的 `url`/`headers`/`body` 始终是含 `{{var}}` 的模板；
+- `file` 参数由 `Config::resolveScannedFile()` 校验：必须是扫描目录内的相对路径，
+  绝对路径、`..` 越界、非 `.http` 扩展名、不存在的文件一律 400；
+- 界面上「实际请求」预览与详情区 URL 行展示的是前端按同一规则算出的真实地址，仅供查看。
+
 ## API 一览
 
 | 接口 | 方法 | 说明 |
 | --- | --- | --- |
 | `index.php?api=tree` | GET | 解析树：`{ok, root, version, count, files[]}`；`version` 为文件 mtime+size 签名，变化即有文件增删改；每个请求对象含 `id/name/varName/method/url/path/headers/body/notes/raw/line`（`raw` 为该请求块逐字原文，含 `###` 标题与注释） |
 | `index.php?api=vars` | GET | 变量表：`{ok, vars, source, environments[], env?, warning?}`；`?env=<名称>` 叠加对应环境；`environments` 为环境名列表（不含 `$shared`） |
-| `index.php?api=send` | POST | 服务端请求代理：入参 `{method, url, headers, body, timeout, env?}`；出参 `{ok, status, statusText, headers, body, durationMs, truncated}`；`{{var}}` 按变量表替换后发送；响应体超 512KB 截断并置 `truncated:true`；参数非法返回 400，网络失败返回 502，错误体为 `{ok:false, error}` |
+| `index.php?api=send` | POST | 服务端请求代理：入参 `{method, url, headers, body, timeout, file?, env?}`（`url`/`headers`/`body` 传**模板原文**，`file` 为扫描目录内的 `.http` 相对路径）；出参 `{ok, status, statusText, headers, body, durationMs, truncated}`；`{{var}}` 由**服务端**按「文件级 `@var` < 环境变量」解析后发送（界面选的环境优先于文件里写死的值）；`file` 非法（绝对路径 / `..` 越界 / 非 `.http` / 不存在）返回 400；响应体超 512KB 截断并置 `truncated:true`；网络失败返回 502，错误体为 `{ok:false, error}` |
 
 静态资源：`assets/style.css`、`assets/app.js`（页面模板内联于 `index.php`）。
+
+## 测试
+
+```bash
+php tests/run.php     # 变量优先级、file 参数安全校验、prepare 插值（零依赖）
+```
 
 ## 界面功能
 
 - **树形导航**：文件 → 分组 → 请求三级折叠；全局搜索（名称/method/路径/varName，命中自动展开）；
-- **请求详情**：方法徽章、URL（`{{var}}` 高亮并带真实值 tooltip）、请求头表格、body 预览
-  （JSON 自动格式化 + token 着色）、备注、**原始 `.http` 逐字片段**（含文件与行号，可复制）；
-- **Try it out**：环境切换（下拉，选中后重拉变量并刷新 URL/请求头）、method/URL/请求头（可增删行）/
-  body/超时均可编辑，`{{var}}` 发送前替换；响应视图含状态码徽章（2xx 绿 / 4xx 橙 / 5xx 红）、耗时、
-  响应头表格、响应体（JSON 高亮、超长折叠、复制、截断提示），错误显示可读横幅；
+- **请求详情**：方法徽章、URL（主显替换后的真实地址，副行保留 `{{var}}` 模板）、请求头表格、
+  body 预览（JSON 自动格式化 + token 着色）、备注、**原始 `.http` 逐字片段**（含文件与行号，可复制）；
+- **环境切换**：顶部 header 全局下拉（环境名来自 `settings.json`），切换后重取变量表并整页重渲染，
+  选择由 `localStorage` 记忆；记忆的环境名若已不存在会自动回落到默认；
+- **Try it out**：method/URL/请求头（可增删行）/body/超时均可编辑；
+  URL 输入框显示替换后的真实地址并**随环境切换动态变更**（下方小字为原始模板），
+  手工编辑后该请求不再跟随环境；`{{var}}` 由服务端在发送时解析；响应视图含状态码徽章
+  （2xx 绿 / 4xx 橙 / 5xx 红）、耗时、响应头表格、响应体（JSON 高亮、超长折叠、复制、截断提示），
+  错误显示可读横幅；
 - **变量面板**：变量键值列表，长值折叠、可复制（值不会明文常驻展示）；
 - **实时刷新**：每 5 秒轮询 `version`，变化时静默刷新树并保持选中项与滚动位置；
 - **主题**：浅色/深色切换（localStorage 记忆）。

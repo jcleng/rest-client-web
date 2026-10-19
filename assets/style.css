@@ -97,6 +97,49 @@ html, body {
   gap: 8px;
 }
 
+.header .env-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.header .env-label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.env-select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  max-width: 220px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.env-select:disabled {
+  opacity: 0.6;
+}
+
+.tryit-url-preview-row {
+  padding-left: 0;
+}
+
+.url-template-tip {
+  font-size: 12px;
+  word-break: break-all;
+  padding: 2px 0 0 0;
+}
+
+.url-template {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+  word-break: break-all;
+}
+
 #search-input {
   padding: 6px 10px;
   border: 1px solid var(--border);

@@ -19,8 +19,9 @@ require_once __DIR__ . '/FileVars.php';
  *   $request  = SendProxy::prepare($decodedBody, (new Env())->vars($env));
  *   $response = (new SendProxy())->send($request);
  *
- * 变量优先级：环境变量（$shared + env 覆盖） < 文件级 `@var`（请求体 fileVars 字段，
- * 文件级更具体、覆盖环境变量）；fileVars 缺省 / null / 非数组时按空表处理。
+ * 变量优先级：文件级 `@var`（请求体 fileVars 字段） < 环境变量（$shared + env 覆盖）。
+ * 环境变量来自用户在界面上选择的环境，覆盖同名的文件级 @var；文件级独有的键仍然生效。
+ * fileVars 缺省 / null / 非数组时按空表处理。
  */
 final class SendProxyException extends RuntimeException
 {

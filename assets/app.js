@@ -64,6 +64,8 @@ const state = {
   tree: null,          // api=tree 响应
   vars: null,          // api=vars 响应
   varsSource: '',      // 变量来源文件
+  env: '',             // 当前环境名（'' 表示默认，仅 $shared）；localStorage 记忆
+  envLoading: false,   // 环境切换中（重拉变量表）
   selectedId: null,    // 当前选中请求 id
   expandedFiles: new Set(),   // 展开的文件
   expandedGroups: new Set(),  // 展开的分组（key: rel::group）
@@ -116,9 +118,12 @@ function fileVarsOf(fileRel) {
   return {};
 }
 
-/** 合并变量表：环境变量 < 文件级变量（文件级更具体，覆盖环境变量）。 */
+/**
+ * 合并变量表：文件级 @var 作底，环境变量（用户在界面选择的）覆盖同名的键。
+ * 与后端 FileVars::merge 语义一致 —— 用户界面选择优先于文件里写死的值。
+ */
 function mergedVars(fileRel) {
-  return Object.assign({}, envVars(), fileVarsOf(fileRel));
+  return Object.assign({}, fileVarsOf(fileRel), envVars());
 }
 
 /** 当前选中请求所在文件的合并变量表。 */
@@ -149,6 +154,7 @@ function renderApp() {
     el('div', { class: 'title' }, 'API 工作台'),
     el('div', { class: 'stats', id: 'stats' }),
     el('div', { class: 'spacer' }),
+    renderEnvSelect(),
     el('div', { class: 'search-wrap' },
       el('input', {
         id: 'search-input',
@@ -187,6 +193,59 @@ function renderApp() {
 
   renderNavTree();
   renderDetail();
+}
+
+/**
+ * 顶部全局环境下拉：环境名来自 api=vars 的 environments，切换后重拉变量表并整页重渲染。
+ * 环境是「后端概念」——前端只传名字，变量解析与请求发送都由 PHP 完成。
+ */
+function renderEnvSelect() {
+  const envs = (state.vars && state.vars.environments) || [];
+  const select = el('select', {
+    id: 'env-select',
+    class: 'env-select',
+    title: '环境（来自 .vscode/settings.json 的 rest-client.environmentVariables）',
+    onchange: (e) => onEnvChange(e.target.value),
+  }, el('option', { value: '' }, '默认（$shared）'));
+  for (const name of envs) {
+    const opt = el('option', { value: name }, name);
+    if (name === state.env) opt.selected = true;
+    select.appendChild(opt);
+  }
+  if (state.envLoading) select.disabled = true;
+  return el('div', { class: 'env-wrap' },
+    el('span', { class: 'env-label' }, '环境'),
+    select,
+    state.envLoading ? el('span', { class: 'muted' }, '切换中...') : null,
+  );
+}
+
+/** 环境切换：重拉 api=vars&env=<名称>，按新变量重算并整页重渲染。 */
+async function onEnvChange(env) {
+  if (state.env === env) return;
+  state.env = env;
+  state.envLoading = true;
+  persistEnv();
+  renderApp();
+  try {
+    const data = await fetchVars(env);
+    state.vars = data;
+    state.varsSource = data.source || '';
+    state.varsError = null;
+  } catch (e) {
+    state.varsError = '变量加载失败: ' + e.message;
+  }
+  state.envLoading = false;
+  // Try it out 面板按新变量重算（URL/请求头模板不变，仅展示与发送参数更新）
+  syncTryItWithEnv();
+  renderApp();
+  renderNavTree();
+  renderDetail();
+}
+
+/** 环境名写入 localStorage，刷新后保持。 */
+function persistEnv() {
+  try { localStorage.setItem(ENV_KEY, state.env); } catch (e) { /* 隐私模式忽略 */ }
 }
 
 function renderStats() {
@@ -330,7 +389,7 @@ function renderDetail() {
   const reqVars = mergedVars(found.fileRel);
 
   const body = el('div', { class: 'section-body' },
-    renderRow('URL', req.url, true, reqVars),
+    renderUrlRow(req.url, reqVars),
     renderRow('方法', req.method),
     renderRow('文件', found.fileRel + ':' + req.line),
     renderRow('变量名', req.varName || '(无)'),
@@ -386,6 +445,24 @@ function appendVarsSection(detail) {
       el('div', { class: 'section-body error-text' }, state.varsError),
     ));
   }
+}
+
+/**
+ * URL 行：主显 {{var}} 替换后的真实地址（便于确认当前环境实际打到哪里），
+ * 模板与真实值不同时保留原始模板为副行。
+ */
+function renderUrlRow(template, vars) {
+  const raw = String(template == null ? '' : template);
+  const real = interpolate(raw, vars);
+  const valEl = el('div', { class: 'url-vars' });
+  valEl.appendChild(document.createTextNode(real));
+  if (real !== raw) {
+    valEl.appendChild(el('div', { class: 'url-template' }, '模板: ' + raw));
+  }
+  return el('div', { class: 'row' },
+    el('span', { class: 'row-label' }, 'URL'),
+    valEl,
+  );
 }
 
 /** 渲染一行键值；highlightVars=true 时把 {{var}} 用 <code> 高亮并附真实值 tooltip。 */
@@ -532,6 +609,9 @@ function renderVarPanel() {
 
 /* ---------------------- Try it out ---------------------- */
 
+/** 当前环境的 localStorage 键。 */
+const ENV_KEY = 'httpviewer.env';
+
 const TRYIT_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'];
 /** 响应体超过该字符数时默认折叠。 */
 const RESPONSE_COLLAPSE_THRESHOLD = 3000;
@@ -546,11 +626,14 @@ function ensureTryIt(req) {
     reqId: req.id,
     fileRel,
     open: false,
-    env: (state.vars && state.vars.env) || '',
     method: String(req.method || 'GET'),
+    // urlTemplate 是原始模板（发送源，{{var}} 由 PHP 解析）；url 是输入框显示值（随环境重算）。
+    // 用户手工改过 url 后置 urlEdited=true，此后环境切换不再覆盖用户输入。
+    urlTemplate: String(req.url || ''),
     url: interpolate(req.url, vars),
+    urlEdited: false,
     headers: Object.entries(req.headers || {}).map(([k, v]) => ({ key: String(k), value: String(v) })),
-    body: String(req.body || ''),   // 保留原文（含 {{var}}），发送前才替换
+    body: String(req.body || ''),
     timeout: 15,
     sending: false,
     response: null,
@@ -571,17 +654,9 @@ function onToggleTryIt() {
 function renderTryItSection(req) {
   const t = state.tryIt;
 
-  // 环境下拉（来自 api=vars 的 environments）
-  const envs = (state.vars && state.vars.environments) || [];
-  const envSelect = el('select', {
-    onchange: (e) => onTryItEnvChange(e.target.value),
-    title: '变量环境（来自 .vscode/settings.json 的 rest-client.environmentVariables）',
-  }, el('option', { value: '' }, '默认（$shared）'));
-  for (const name of envs) {
-    const opt = el('option', { value: name }, name);
-    if (name === t.env) opt.selected = true;
-    envSelect.appendChild(opt);
-  }
+  // 当前环境：在顶部全局切换，这里只读展示
+  const envTip = el('span', { class: 'muted' },
+    (state.env ? state.env : '默认（$shared）') + '（在顶部「环境」处切换）');
 
   // method 下拉
   const methodSelect = el('select', { onchange: (e) => { t.method = e.target.value; } });
@@ -592,11 +667,23 @@ function renderTryItSection(req) {
     methodSelect.appendChild(opt);
   }
 
+  // URL 输入框显示「替换后的真实地址」（随环境动态变更）；
+  // 未编辑时下方显示原始模板，发送时仍以模板为源交给 PHP 解析。
   const urlInput = el('input', {
     type: 'text', class: 'tryit-input tryit-url', value: t.url,
     spellcheck: 'false', placeholder: 'http://... 或 {{host}}/path',
-    oninput: (e) => { t.url = e.target.value; },
+    oninput: (e) => { t.url = e.target.value; t.urlEdited = true; renderUrlTemplateTip(); },
   });
+
+  const urlTemplateTip = el('div', { class: 'url-template-tip muted' });
+  function renderUrlTemplateTip() {
+    if (t.urlEdited) {
+      urlTemplateTip.textContent = '已手工编辑（发送此地址）';
+      return;
+    }
+    urlTemplateTip.textContent = '模板: ' + t.urlTemplate;
+  }
+  renderUrlTemplateTip();
 
   const bodyArea = el('textarea', {
     class: 'tryit-input tryit-body', rows: '8', spellcheck: 'false',
@@ -623,8 +710,7 @@ function renderTryItSection(req) {
     el('div', { class: 'section-body' },
       el('div', { class: 'tryit-row' },
         el('span', { class: 'tryit-label' }, '环境'),
-        envSelect,
-        t.envLoading ? el('span', { class: 'muted' }, '加载变量中...') : null,
+        envTip,
       ),
       el('div', { class: 'tryit-row' },
         el('span', { class: 'tryit-label' }, 'Method'),
@@ -632,6 +718,7 @@ function renderTryItSection(req) {
         el('span', { class: 'tryit-label' }, 'URL'),
         urlInput,
       ),
+      el('div', { class: 'tryit-row tryit-url-preview-row' }, urlTemplateTip),
       el('div', { class: 'tryit-row', style: 'display:block;' },
         el('span', { class: 'tryit-label' }, 'Headers'),
         headersTable,
@@ -688,26 +775,26 @@ function renderTryItHeadersTable(t) {
 async function onTryItSend() {
   const t = state.tryIt;
   if (!t || t.sending) return;
-  const vars = mergedVarsForRequest(t.reqId);
   const fileRel = t.fileRel || (findRequest(t.reqId) || {}).fileRel || null;
-  const fileVars = fileVarsOf(fileRel);
 
+  // 前端只上送「模板 + file + env」：{{var}} 的解析全部由 PHP 完成
+  // （环境变量来自 settings.json，文件级 @var 由服务端读 file 指向的 .http）。
   const headers = {};
   for (const row of t.headers) {
     const k = String(row.key).trim();
     if (!k) continue;
-    headers[k] = interpolate(row.value, vars);
+    headers[k] = String(row.value);
   }
   const payload = {
     method: t.method,
-    url: interpolate(t.url, vars),
+    // 未编辑：传模板交给 PHP 按当前环境解析；已编辑：传用户输入的地址
+    url: t.urlEdited ? String(t.url) : String(t.urlTemplate),
     headers,
-    body: t.body === '' ? '' : interpolate(t.body, vars),
+    body: t.body === '' ? '' : String(t.body),
     timeout: Math.max(1, Math.min(60, parseInt(t.timeout, 10) || 15)),
-    // 文件级变量随请求上送，服务端按同一优先级（文件级覆盖环境变量）再次插值
-    fileVars,
   };
-  if (t.env) payload.env = t.env;
+  if (fileRel) payload.file = fileRel;
+  if (state.env) payload.env = state.env;
 
   t.sending = true;
   t.error = null;
@@ -733,32 +820,22 @@ async function onTryItSend() {
   renderDetail();
 }
 
-/** 环境切换：重拉 api=vars&env=<名称>，并用新变量（含文件级变量）刷新 URL 与请求头。 */
-async function onTryItEnvChange(env) {
+/**
+ * 环境切换后同步 Try it out 面板的展示值（前端仅用于「显示」，发送时仍由 PHP 解析）。
+ * URL 与请求头按新变量重新插值；用户已手工编辑过的 URL 会被重置为模板渲染结果。
+ */
+function syncTryItWithEnv() {
   const t = state.tryIt;
   if (!t) return;
-  t.env = env;
-  t.envLoading = true;
-  renderDetail();
-  try {
-    const data = await fetchVars(env);
-    state.vars = data;
-    state.varsSource = data.source || '';
-    state.varsError = null;
-    // 优先级不变：环境变量（新 env）< 文件级变量
-    const vars = mergedVarsForRequest(t.reqId);
-    const found = findRequest(t.reqId);
-    if (found) {
-      t.url = interpolate(found.req.url, vars);
-      // 请求头按解析结果的原值重新插值（不叠加用户手工修改）
-      t.headers = Object.entries(found.req.headers || {})
-        .map(([k, v]) => ({ key: String(k), value: interpolate(String(v), vars) }));
-    }
-  } catch (e) {
-    state.varsError = '变量加载失败: ' + e.message;
+  const found = findRequest(t.reqId);
+  if (!found) return;
+  // 模板与请求头始终回到解析结果原文（发送源）；url 显示值在未被手工编辑时随环境重算
+  t.urlTemplate = String(found.req.url || '');
+  if (!t.urlEdited) {
+    t.url = interpolate(t.urlTemplate, mergedVarsForRequest(t.reqId));
   }
-  t.envLoading = false;
-  renderDetail();
+  t.headers = Object.entries(found.req.headers || {})
+    .map(([k, v]) => ({ key: String(k), value: String(v) }));
 }
 
 /** 响应视图：错误横幅 / 状态徽章 / 耗时 / 响应头 / 响应体（高亮、折叠、复制）。 */
@@ -963,6 +1040,12 @@ async function init() {
   try { saved = localStorage.getItem('theme'); } catch (e) { /* 忽略 */ }
   document.documentElement.dataset.theme = saved === 'dark' ? 'dark' : 'light';
 
+  // 当前环境：localStorage 记忆（默认空 = 仅 $shared）
+  try {
+    const savedEnv = localStorage.getItem(ENV_KEY);
+    if (savedEnv) state.env = savedEnv;
+  } catch (e) { /* 忽略 */ }
+
   renderApp();
 
   // tree 与 vars 独立加载：vars 失败不连带丢弃已成功的 tree
@@ -980,10 +1063,17 @@ async function init() {
   }
 
   try {
-    const varsData = await fetchVars();
+    const varsData = await fetchVars(state.env);
+    // 记忆的环境名若已不存在（settings.json 改过），回落到默认并清掉记忆
+    const envs = varsData.environments || [];
+    if (state.env && !envs.includes(state.env)) {
+      state.env = '';
+      persistEnv();
+    }
     state.vars = varsData;
     state.varsSource = varsData.source || '';
     state.varsError = null;
+    renderApp();
     renderDetail();
   } catch (e) {
     state.varsError = '变量加载失败: ' + e.message;

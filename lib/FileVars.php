@@ -62,7 +62,11 @@ final class FileVars
     }
 
     /**
-     * 合并变量表：文件级变量优先于环境变量（文件级覆盖环境）。
+     * 合并变量表：**环境变量优先于文件级变量**。
+     *
+     * 语义：`.http` 里的 `@var` 只是「默认值/兜底」，用户在界面上选定的环境（及其
+     * $shared）权重更高——用户在界面上的选择为准。文件里定义了、环境里没有的键，
+     * 仍由文件级提供（如 @token2、@merchant_token 这类只存在于 .http 的变量）。
      *
      * @param array<string,mixed> $envVars   环境变量（$shared 叠加 env 后的结果）
      * @param array<string,mixed> $fileVars  文件级变量
@@ -70,9 +74,13 @@ final class FileVars
      */
     public static function merge(array $envVars, array $fileVars): array
     {
+        if ($envVars === []) {
+            return $fileVars;
+        }
         if ($fileVars === []) {
             return $envVars;
         }
-        return array_merge($envVars, $fileVars);
+        // 环境变量在后，覆盖同名的文件级 @var
+        return array_merge($fileVars, $envVars);
     }
 }

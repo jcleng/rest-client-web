@@ -3,10 +3,11 @@ declare(strict_types=1);
 
 /**
  * 入口路由。
- *  - 无 api 参数        -> HTML 页面（前端由 assets/app.js 实现）
  *  - GET  ?api=tree     -> 解析树 JSON
  *  - GET  ?api=vars     -> .vscode 变量表 JSON（可选 env=<名称>）
- *  - POST ?api=send     -> 服务端请求代理 JSON（请求体可带 fileVars：文件级变量，优先于环境变量）
+ *  - POST ?api=send     -> 服务端请求代理 JSON
+ *                          变量全部由服务端解析：env 指定环境，file 指定 .http 相对路径
+ *                          （服务端自行读取该文件的 `@var`，前端只传模板不传变量值）
  * 异常统一返回 {"ok":false,"error":...}（HTTP 400/404/405/500/502）。
  */
 
@@ -88,6 +89,9 @@ function handleVars(): array
 /**
  * ?api=send：校验并代理一次 HTTP 请求。
  *
+ * 变量解析全部在服务端完成（前端只传模板与 file/env 名字）：
+ *   环境变量（settings.json，$shared + env 覆盖） < 文件级 @var（file 指向的 .http 文件）。
+ *
  * @return array<string,mixed>
  */
 function handleSend(): array
@@ -113,7 +117,20 @@ function handleSend(): array
     $envLoader = new Env();
     $vars = $envLoader->vars($env);
 
-    $request = SendProxy::prepare($decoded, $vars);
+    // 文件级变量：由 file（扫描根内的相对路径）在服务端读取，前端不参与变量解析。
+    $config = Config::load();
+    $fileVars = [];
+    $fileRel = $decoded['file'] ?? null;
+    if (is_string($fileRel) && trim($fileRel) !== '') {
+        $abs = $config->resolveScannedFile($fileRel);
+        if ($abs === null) {
+            http_response_code(400);
+            return ['ok' => false, 'error' => 'file 非法（必须是扫描目录内的 .http 相对路径）: ' . $fileRel];
+        }
+        $fileVars = FileVars::extractFile($abs);
+    }
+
+    $request = SendProxy::prepare($decoded, $vars, $fileVars);
     $response = (new SendProxy())->send($request);
     // 契约要求响应头为对象：空数组时 json_encode 会得到 []，此处强转保证恒为 {}。
     $response['headers'] = (object) $response['headers'];

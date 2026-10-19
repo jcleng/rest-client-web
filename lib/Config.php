@@ -82,6 +82,40 @@ final class Config
         return $this->root;
     }
 
+    /**
+     * 校验一个「扫描根内的 .http 文件」相对路径，返回绝对路径；非法返回 null。
+     *
+     * 供 api=send 的 file 参数使用：前端只传相对路径，由服务端自行读取该文件的
+     * 文件级变量（不在前端解析变量）。
+     *
+     * 拒绝：非字符串/空串、绝对路径（含 Windows 盘符）、扩展名不是 .http、
+     * realpath 失败、realpath 落在扫描根之外（防目录穿越）。
+     */
+    public function resolveScannedFile(mixed $rel): ?string
+    {
+        if (!is_string($rel) || trim($rel) === '') {
+            return null;
+        }
+        $rel = str_replace('\\', '/', trim($rel));
+        // 绝对路径（/x 或 C:/x）一律拒绝：只接受扫描根内的相对路径
+        if (str_starts_with($rel, '/') || preg_match('#^[A-Za-z]:/#', $rel) === 1) {
+            return null;
+        }
+        if (strtolower((string) pathinfo($rel, PATHINFO_EXTENSION)) !== 'http') {
+            return null;
+        }
+        $real = realpath($this->dir . '/' . $rel);
+        if ($real === false || !is_file($real)) {
+            return null;
+        }
+        $real = rtrim(str_replace('\\', '/', $real), '/');
+        $base = $this->dir;
+        if ($real === $base || !str_starts_with($real, $base . '/')) {
+            return null;
+        }
+        return $real;
+    }
+
     private static function resolveRoot(?string $root): string
     {
         $candidate = $root ?? dirname(__DIR__);
